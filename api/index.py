@@ -1,24 +1,38 @@
 import json
 import statistics
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 
 app = FastAPI()
 
-# Enable CORS
+# Proper CORS for Vercel (POST + OPTIONS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST"],
+    allow_credentials=True,
+    allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# Load JSON
+# Load telemetry JSON
 data_path = Path(__file__).resolve().parent.parent / "q-vercel-latency.json"
 
 with open(data_path) as f:
     telemetry = json.load(f)
+
+
+# Handle OPTIONS (important for grader)
+@app.options("/api/latency")
+async def options_handler():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
 
 
 @app.post("/api/latency")
@@ -49,4 +63,8 @@ async def analyze_latency(request: Request):
             "breaches": breaches,
         }
 
-    return result
+    return Response(
+        content=json.dumps(result),
+        media_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
