@@ -1,18 +1,5 @@
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import List
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+import json
+from http.server import BaseHTTPRequestHandler
 
 DATA = [
   {"region":"apac","service":"payments","latency_ms":187.76,"uptime_pct":97.631},
@@ -53,23 +40,25 @@ DATA = [
   {"region":"amer","service":"checkout","latency_ms":168.4,"uptime_pct":97.907},
 ]
 
-class QueryRequest(BaseModel):
-    regions: List[str]
-    threshold_ms: float
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+}
 
 def percentile(data, p):
-    sorted_data = sorted(data)
-    n = len(sorted_data)
+    s = sorted(data)
+    n = len(s)
     idx = (p / 100) * (n - 1)
-    lower = int(idx)
-    upper = lower + 1
-    if upper >= n:
-        return sorted_data[lower]
-    return sorted_data[lower] + (idx - lower) * (sorted_data[upper] - sorted_data[lower])
+    lo = int(idx)
+    hi = lo + 1
+    if hi >= n:
+        return s[lo]
+    return s[lo] + (idx - lo) * (s[hi] - s[lo])
 
-def compute(req: QueryRequest):
+def compute(regions, threshold_ms):
     result = {}
-    for region in req.regions:
+    for region in regions:
         records = [r for r in DATA if r["region"] == region]
         if not records:
             continue
@@ -79,28 +68,33 @@ def compute(req: QueryRequest):
             "avg_latency": round(sum(latencies) / len(latencies), 4),
             "p95_latency": round(percentile(latencies, 95), 4),
             "avg_uptime": round(sum(uptimes) / len(uptimes), 4),
-            "breaches": sum(1 for l in latencies if l > req.threshold_ms),
+            "breaches": sum(1 for l in latencies if l > threshold_ms),
         }
     return result
 
-@app.options("/api/latency")
-async def options_handler():
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
+class handler(BaseHTTPRequestHandler):
+    def _send(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        for k, v in CORS_HEADERS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
-@app.post("/api/latency")
-async def check_latency(req: QueryRequest):
-    return JSONResponse(
-        content=compute(req),
-        headers={"Access-Control-Allow-Origin": "*"}
-    )
+    def do_OPTIONS(self):
+        self._send(200, {})
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "endpoint": "POST /api/latency"}
+    def do_GET(self):
+        self._send(200, {"status": "ok", "endpoint": "POST /api/latency"})
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length))
+            regions = body["regions"]
+            threshold_ms = float(body["threshold_ms"])
+            self._send(200, compute(regions, threshold_ms))
+        except Exception as e:
+            self._send(400, {"error": str(e)})
